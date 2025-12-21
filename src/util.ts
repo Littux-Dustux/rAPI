@@ -181,3 +181,9 @@ export const parseParams = (data: Record<string, any> | [string, any][]): [strin
 	});
 	return params;
 };
+
+
+export const capitalize = (str: string): string => {
+	if (!str) return ""; // Handle empty strings
+	return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+};

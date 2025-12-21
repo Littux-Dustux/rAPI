@@ -104,6 +104,7 @@ declare namespace rtypes {
 	`JSON_MISSING_KEY` | JSON missing key: "%(key)s"
 	`JSON_PARSE_ERROR` | unable to parse JSON data
 	`LOGGED_IN` | You are already logged in.
+	`MAY_NOT_VIEW` | you're not allowed to view that page
 	`MOD_REQUIRED` | You must be a moderator to do that.
 	`MULTI_CANNOT_EDIT` | you can't change that multireddit
 	`MULTI_EXISTS` | that multireddit already exists
@@ -146,6 +147,8 @@ declare namespace rtypes {
 	`OTP_ALREADY_ENABLED` | two-factor authentication is already enabled
 	`OVERSOLD` | that subreddit has already been oversold on %(start)s to %(end)s. Please pick another subreddit or date.
 	`OVERSOLD_DETAIL` | We have insufficient inventory to fulfill your requested budget, target, and dates. Only %(available)s impressions available on %(target)s from %(start)s to %(end)s.
+	`PAGE_NOT_CREATED` | Wiki page doesn't exist
+	`PAGE_NOT_FOUND` | Wiki page not found
 	`POST_NOT_ACCESSIBLE` | Cannot access this post.
 	`quarantined` | this subreddit is quarantined and requires you to opt-in
 	`QUARANTINE_REQUIRES_VERIFICATION` | [*add message here*]
@@ -202,7 +205,7 @@ declare namespace rtypes {
 	`WRONG_DOMAIN` | you can't do that on this domain
 	`WRONG_PASSWORD` | wrong password
 	*/
-	type ErrorCode = (
+	type ErrorCode =
 		| "ADMIN_REQUIRED"
 		| "ALREADY_MODERATOR"
 		| "ALREADY_SUB"
@@ -288,6 +291,7 @@ declare namespace rtypes {
 		| "JSON_MISSING_KEY"
 		| "JSON_PARSE_ERROR"
 		| "LOGGED_IN"
+		| "MAY_NOT_VIEW"
 		| "MOD_REQUIRED"
 		| "MULTI_CANNOT_EDIT"
 		| "MULTI_EXISTS"
@@ -330,6 +334,7 @@ declare namespace rtypes {
 		| "OTP_ALREADY_ENABLED"
 		| "OVERSOLD"
 		| "OVERSOLD_DETAIL"
+		| "PAGE_NOT_CREATED"
 		| "POST_NOT_ACCESSIBLE"
 		| "quarantined"
 		| "QUARANTINE_REQUIRES_VERIFICATION"
@@ -384,8 +389,7 @@ declare namespace rtypes {
 		| "USER_REQUIRED"
 		| "VERIFIED_USER_REQUIRED"
 		| "WRONG_DOMAIN"
-		| "WRONG_PASSWORD"
-	);
+		| "WRONG_PASSWORD";
 	
 	type CommentSort = "confidence" | "top" | "new" | "controversial" | "old" | "random" | "qa" | "live";
 	type SubredditType = "public" | "private" | "restricted" | "quarantined" | "gated" | "employees_only" | "gold_only" | "user";
@@ -428,6 +432,7 @@ declare namespace models {
 		error: number;
 		message: string;
 		reason?: string;
+		explanation?: string;
 	}
 
 	/**

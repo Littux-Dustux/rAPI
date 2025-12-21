@@ -15,7 +15,7 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams } from "./util";
+import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams, capitalize } from "./util";
 import { getLogger } from "./logging";
 
 const logger = getLogger("requests");
@@ -80,17 +80,21 @@ class RedditAPIError extends Error {
 	 * @param {Object} errors - An array in the format [code, error] or an array containing arrays in format [code, msg] or [code, msg, field]
 	*/
 	constructor(errors: [number, string] | [number | rtypes.ErrorCode, string][] | [rtypes.ErrorCode, string, string][] | RedditError[]) {
-		if (!Array.isArray(errors[0])) errors = [errors as [number, string]];
+		if (!Array.isArray(errors[0]) && !(errors[0] instanceof RedditError)) {
+			errors = [errors as [number, string]]
+		};
 		errors = errors.map((error) => {
-			if (error instanceof RedditError) return error;
-			else if (error.length === 2) return new RedditError(error[0], error[1]);
-			else if (error.length === 3) return new RedditError(error[0], error[1], error[2]);
+			if (error instanceof RedditError) return error
+			else if (error.length === 2) return new RedditError(error[0], error[1])
+			else if (error.length === 3) return new RedditError(error[0], error[1], error[2])
+			else throw new TypeError("Unknown error: "+JSON.stringify(error));
 		});
 
 		super(
 			errors.map(error => error.toString()).join("\n")
 		);
 		this.name = "RedditAPIError";
+		this.errors = errors;
 	}
 };
 
@@ -103,8 +107,9 @@ export default class {
 		banned: "that subreddit was banned",
 		private: "that subreddit is private",
 		quarantined: "that subreddit is quarantined and requires you to opt-in",
-		gated:
-			"that subreddit contains content pertaining to drug use and abuse, and requires you to opt-in",
+		gated: "that subreddit contains content pertaining to drug use and abuse, and requires you to opt-in",
+		PAGE_NOT_CREATED: "that page has not been created yet",
+		MAY_NOT_VIEW: "you're not allowed to view that page",
 	};
 
 	static readonly modhash = new AuthToken(async () => {
@@ -171,47 +176,51 @@ export default class {
 	 * @param args.oauth - Whether or not to use OAuth authentication
 	 * @param [args.method="GET"] HTTP method
 	 * @param args.body - Request body
-	 * @param [fetchArgs={}] fetch() params
+	 * @param [requestInit={}] fetch() params
 	 */
 	static async request(
 		{
-			url,
-			oauth = false,
-			method = "GET",
-			body,
-			json,
+			url, oauth = false, method = "GET",
+			body, json, requestInit = {},
 			ratelimit = false,
 		}: {
-			url: URL | string;
+			url?: URL | string;
 			oauth?: boolean;
 			body?: BodyInit;
 			json?: Object;
+			requestInit?: RequestInit;
 			ratelimit?: boolean;
 			method?: HTTPMethod;
-		},
-		fetchArgs: Partial<RequestInit> = {}
+		}
 	): Promise<Response> {
-		fetchArgs.credentials = "same-origin";
-		fetchArgs.method = method;
+		requestInit.credentials = "same-origin";
+		requestInit.method = method;
+
+		if (!requestInit.headers)
+			requestInit.headers = new Headers()
+		else if (!(requestInit.headers instanceof Headers))
+			requestInit.headers = new Headers(requestInit.headers);
 
 		if (!(method === "GET" || method === "HEAD")) {
 			if (json) {
-				fetchArgs.headers["Content-Type"] = "application/json; charset=UTF-8";
-				fetchArgs.body = JSON.stringify(json);
+				requestInit.headers.set("content-type", "application/json; charset=UTF-8");
+				requestInit.body = JSON.stringify(json);
 			} else if (body) {
-				fetchArgs.body = body;
+				requestInit.body = body;
 			} else
 				throw new TypeError(
 					"either body or json parameters must be provided for non HEAD/GET requests"
 				);
 
-			if (!oauth) fetchArgs.headers["X-Modhash"] = await this.modhash.get();
+			if (!oauth) requestInit.headers.set("x-modhash", await this.modhash.get());
 		}
 
-		if (oauth) fetchArgs.headers["Authorization"] = "Bearer " + (await this.accessToken.get());
+		if (oauth) requestInit.headers.set(
+			"authorization", "Bearer " + (await this.accessToken.get())
+		);
 		if (ratelimit) await this.ratelimiter.wait();
 
-		return fetchWithRetries(url, fetchArgs);
+		return fetchWithRetries(url, requestInit);
 	}
 
 	/**
@@ -259,22 +268,26 @@ export default class {
 		}
 
 		if (!resp.ok) {
-			if (typeof jsonData === "object" && jsonData?.error && jsonData?.message) {
+			if (typeof jsonData === "object") {
 				let errors: RedditError[] = [];
-				errors.push(new RedditError(jsonData.error, jsonData.message));
+				errors.push(new RedditError(
+					(jsonData?.error) ? jsonData.error : resp.status,
+					(jsonData?.message) ? jsonData.message : resp.statusText
+				));
 
 				if (jsonData?.reason) {
-					const mappedMsg = this.GETerrorMap[jsonData.reason];
-					if (mappedMsg)
-						errors.push(new RedditError(jsonData.reason as rtypes.ErrorCode, mappedMsg));
-					else
+					let explanation = jsonData?.explanation;
+					explanation ??= this.GETerrorMap[jsonData.reason];
+					if (explanation) {
+						errors.push(new RedditError(jsonData.reason as rtypes.ErrorCode, explanation));
+					} else {
 						errors.push(
 							new RedditError(
-								jsonData.reason as rtypes.ErrorCode,
-								"Unexpected error reason: " + jsonData.reason
+								jsonData.reason as rtypes.ErrorCode, capitalize(jsonData.reason.replaceAll("_", " "))
 							)
 						);
-				}
+					};
+				};
 				throw new RedditAPIError(errors);
 			} else throw new RedditAPIError([resp.status, resp.statusText]);
 		}
@@ -436,7 +449,7 @@ export default class {
 				after = listingObject.data.after;
 				url.searchParams.set("after", after);
 
-				for (const child of listingObject.data.children) yield child;
+				yield* listingObject.data.children;
 			}
 
 			if (limit !== null) {
@@ -445,7 +458,7 @@ export default class {
 					if (goInReverse) {
 						// Yield children in reverse order
 						for (const children of listingChildrens.reverse())
-							for (const child of children) yield child;
+							yield* children;
 					};
 					break;
 				} else if (limit < 100) url.searchParams.set("limit", limit.toString());

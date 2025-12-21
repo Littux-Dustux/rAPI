@@ -1,6 +1,7 @@
 {
 	"scripts": {
-		"build": "tsup src/main.ts --format iife --clean --minify"
+		"build": "tsup src/main.ts --format iife --clean --minify",
+		"build_debug": "tsup src/main.ts --format iife"
 	},
 	"devDependencies": {
 		"tsup": "^8.5.1"
