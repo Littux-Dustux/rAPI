@@ -1,5 +1,9 @@
 {
 	"scripts": {
 		"build": "tsup src/main.ts --format iife --clean --minify"
-	}
+	},
+	"devDependencies": {
+		"tsup": "^8.5.1"
+	},
+	"license": "LGPL-3.0-or-later"
 }
