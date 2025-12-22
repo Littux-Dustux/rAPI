@@ -34,10 +34,10 @@ export class AuthToken {
 
 	/**
 	 * Creates an instance of AuthToken.
-	 * @param {Function} tokenUpdateFunc - function that returns a new token. Should return an array in format [token, expires_on (ms)]
+	 * @param tokenUpdateFunc - function that returns a new token. Should return an array in format [token, expires_on (ms)]
 	 * @memberof AuthToken
 	 */
-	constructor(tokenUpdateFunc: Function) {
+	constructor(tokenUpdateFunc: () => Promise<[string, number]>) {
 		this.refreshFunc = tokenUpdateFunc;
 	};
 

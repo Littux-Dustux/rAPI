@@ -15,7 +15,7 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams, capitalize } from "./util";
+import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams, capitalize, getJWTexpiry } from "./util";
 import { getLogger } from "./logging";
 
 const logger = getLogger("requests");
@@ -135,22 +135,45 @@ export default class {
 		)
 			return [(window as any).___r.session.accessToken, (window as any).___r.session.expires];
 
+		let token: string | null = localStorage.getItem("rAPI:accessToken");
+		let expiry: number = parseInt(localStorage.getItem("rAPI:accessTokenExpiry"));
+
+		if (token && expiry > Date.now()) return [token, expiry]
+		else {
+			token = expiry = null;
+			localStorage.removeItem("rAPI:accessToken");
+			localStorage.removeItem("rAPI:accessTokenExpiry");
+			logger.dbg("No valid access token in localStorage");
+		};
+
 		if (location.host === "www.reddit.com" || location.host === "sh.reddit.com") {
 			let csrf_token = await getCookiePing("csrf_token", "https://sh.reddit.com/404");
-			let data = await fetch("/svc/shreddit/token", {
+			fetch("/svc/shreddit/token", {
 				headers: { "Content-Type": "application/json" },
 				method: "POST",
 				body: '{"csrf_token":"' + csrf_token + '"}',
-			}).then((resp) => resp.json());
-
-			return [data.token, data.expires];
-		}
+			})
+			.then((resp) => resp.json())
+			.then((data: {token: string, expires: number}) => {
+				(token = data.token), (expiry = data.expires);
+			});
+		};
 
 		// Fallback to "token" cookie
-		return [getCookiePing("token", "https://mod.reddit.com/404"), Date.now() + 3600e3];
+		token ??= btoa(await getCookiePing("token", "https://mod.reddit.com/404"));
+		expiry ??= getJWTexpiry(token);
+
+		return [token, expiry]
 	});
 
 	static readonly matrixAccessToken = new AuthToken(async () => {
+		// Try and use the existing token set by chat.reddit.com
+		const token = localStorage.getItem("chat:matrix-access-token");
+		const tokenExpiry = token ? getJWTexpiry(token) : 0;
+		if (token && tokenExpiry > Date.now()) {
+			return [token, tokenExpiry]
+		};
+
 		// Login to matrix.redditspace.com with flow "com.reddit.token"
 		const payload = {
 			type: "com.reddit.token",
@@ -163,7 +186,9 @@ export default class {
 			body: JSON.stringify(payload),
 		}).then((r) => r.json());
 
-		return [data.access_token, null];
+		localStorage.setItem("chat:matrix-access-token", token);
+
+		return [data.access_token, getJWTexpiry(data.access_token)];
 	});
 
 	private static ratelimiter = new RateLimiter(1000, 100);
