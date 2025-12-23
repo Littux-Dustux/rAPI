@@ -121,55 +121,71 @@ export default class {
 		let token: string | null = localStorage.getItem("rAPI:accessToken");
 		let expiry: number = parseInt(localStorage.getItem("rAPI:accessTokenExpiry"));
 
-		if (token && expiry > Date.now()) return [token, expiry]
-		else {
+		if (token && expiry > Date.now()) {
+			logger.dbg("Using previously cached access token from localStorage");
+			return [token, expiry];
+		} else {
 			token = expiry = null;
 			localStorage.removeItem("rAPI:accessToken");
 			localStorage.removeItem("rAPI:accessTokenExpiry");
-			logger.dbg("No valid access token in localStorage");
+			logger.dbg("No valid access token in localStorage. Deleted cached token.");
 		};
 
 		if (location.host === "www.reddit.com" || location.host === "sh.reddit.com") {
 			let csrf_token = await getCookiePing("csrf_token", "https://sh.reddit.com/404");
-			fetch("/svc/shreddit/token", {
+			await fetch("/svc/shreddit/token", {
 				headers: { "Content-Type": "application/json" },
 				method: "POST",
 				body: '{"csrf_token":"' + csrf_token + '"}',
 			})
-			.then((resp) => resp.json())
-			.then((data: {token: string, expires: number}) => {
+			.then((resp) => resp.text())
+			.then((text) => {
+				logger.dbg("Got data from /svc/shreddit/token, response: " + text);
+				const data: { token: string, expires: number } = JSON.parse(text);
 				(token = data.token), (expiry = data.expires);
 			});
 		};
 
 		// Fallback to "token" cookie
-		token ??= btoa(await getCookiePing("token", "https://mod.reddit.com/404"));
-		expiry ??= getJWTexpiry(token);
+		if (!token) {
+			logger.dbg("Falling back to 'token' cookie for access token");
+			const rssgToken = JSON.parse(
+				atob((await getCookiePing("token", "https://mod.reddit.com/404")).split(".")[0])
+			);
+			token = rssgToken.accessToken;
+			expiry = rssgToken.expires;
+		};
 
 		return [token, expiry]
 	});
 
 	static readonly matrixAccessToken = new AuthToken(async () => {
 		// Try and use the existing token set by chat.reddit.com
-		const token = localStorage.getItem("chat:matrix-access-token");
+		const token = JSON.parse(localStorage.getItem("chat:matrix-access-token"));
 		const tokenExpiry = token ? getJWTexpiry(token) : 0;
 		if (token && tokenExpiry > Date.now()) {
+			logger.dbg("Using previously cached Matrix access token from localStorage");
 			return [token, tokenExpiry]
 		};
 
 		// Login to matrix.redditspace.com with flow "com.reddit.token"
+		logger.dbg("Fetching new Matrix access token from matrix.redditspace.com");
 		const payload = {
-			type: "com.reddit.token",
-			token: await this.accessToken.get(),
-			initial_device_display_name: "Reddit Web Client",
-		};
+				type: "com.reddit.token",
+				token: await this.accessToken.get(),
+				initial_device_display_name: "Reddit Web Client",
+			},
+			deviceId = JSON.parse(localStorage.getItem("chat:matrix-device-id"));
+
+		if (deviceId) payload["device_id"] = deviceId;
+
 		const data = await fetch("https://matrix.redditspace.com/_matrix/client/v3/login", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 		}).then((r) => r.json());
 
-		localStorage.setItem("chat:matrix-access-token", token);
+		localStorage.setItem("chat:matrix-access-token", JSON.stringify(data.access_token));
 
 		return [data.access_token, getJWTexpiry(data.access_token)];
 	});

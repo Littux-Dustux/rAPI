@@ -2,18 +2,23 @@
 export const getJWTexpiry = (token: string): number => {	
 	// Split JWT token into 3 parts, decode the second base64 part, parse as JSON, and get the "exp" value.
 	try {
-		return JSON.parse(
-			decodeURIComponent(escape(atob(token.split(".")[1])))
-		).exp * 1000 // To convert to milliseconds
+		const tokenParts = token.split(".");
+		if (tokenParts.length !== 3) throw new TypeError("Invalid JWT token format: does not have 3 parts");
+
+		const parsedToken = JSON.parse(atob(tokenParts[1]));
+		if (!parsedToken.exp) throw new TypeError("Invalid JWT token format: missing 'exp' field");
+
+		// To convert to milliseconds
+		return parsedToken.exp * 1000;
 	} catch(err) {
-		throw new TypeError("Error while getting token expiry time: " + (err as Error).message);
+		throw new TypeError("Error while getting token expiry time: " + err);
 	}
 };
 
 export class AuthToken {
-	private _token: string
-	private refreshFunc: Function
-	expires_on: number = 0
+	private _token: string;
+	private refreshFunc: Function;
+	expires_on: number = 0;
 
 	/**
 	 * Creates an instance of AuthToken.
@@ -22,7 +27,7 @@ export class AuthToken {
 	 */
 	constructor(tokenUpdateFunc: () => Promise<[string, number]>) {
 		this.refreshFunc = tokenUpdateFunc;
-	};
+	}
 
 	/**
 	 * Get an Authentication token. If expired, gets a new token with refreshFunc specified during class init. Otherwise, returns the cached token.
@@ -31,16 +36,27 @@ export class AuthToken {
 	 * @memberof AuthToken
 	 */
 	async get(): Promise<string> {
-		if (Date.now() > (this.expires_on - 60)) {
-			[this._token, this.expires_on] = await this.refreshFunc() || [null, 0];
-			if (!this._token) throw new TypeError(
-				"Failed getting token with function: " + this.refreshFunc.toString()
+		if (Date.now() > this.expires_on - 60) await this.refresh();
+		return this._token;
+	};
+
+	/**
+	 * Force refresh the token using the refreshFunc specified during class init.
+	 *
+	 * @return {Promise<void>}
+	 * @memberof AuthToken
+	 */
+	async refresh(): Promise<void> {
+		[this._token, this.expires_on] = (await this.refreshFunc()) || [null, 0];
+		if (!this._token)
+			throw new TypeError("Failed getting token with function: " + this.refreshFunc.toString());
+		this.expires_on ??= getJWTexpiry(this._token);
+		if (Date.now() > this.expires_on)
+			throw new TypeError(
+				`Token generated at ${new Date().toISOString()} expired on ${new Date(
+					this.expires_on
+				).toISOString()}`
 			);
-			this.expires_on ??= getJWTexpiry(this._token);			
-			if (Date.now() > this.expires_on) throw new TypeError(
-				`Token generated at ${new Date().toISOString()} expired on ${new Date(this.expires_on).toISOString()}`
-			);
-		}; return this._token
 	}
 };
 

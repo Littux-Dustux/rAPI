@@ -1,1 +1,3 @@
 Incomplete library to access the Reddit API from a bookmarklet.
+
+**Contributions welcome**
