@@ -156,16 +156,18 @@ export default class {
 			expiry = rssgToken.expires;
 		};
 
+		localStorage.setItem("rAPI:accessToken", token);
+		localStorage.setItem("rAPI:accessTokenExpiry", expiry.toString());
+
 		return [token, expiry]
 	});
 
 	static readonly matrixAccessToken = new AuthToken(async () => {
 		// Try and use the existing token set by chat.reddit.com
-		const token = JSON.parse(localStorage.getItem("chat:matrix-access-token"));
-		const tokenExpiry = token ? getJWTexpiry(token) : 0;
-		if (token && tokenExpiry > Date.now()) {
+		const tokenData: {token: string, expires: number} = JSON.parse(localStorage.getItem("chat:access-token"));
+		if (tokenData && tokenData.expires > Date.now()) {
 			logger.dbg("Using previously cached Matrix access token from localStorage");
-			return [token, tokenExpiry]
+			return [tokenData.token, tokenData.expires]
 		};
 
 		// Login to matrix.redditspace.com with flow "com.reddit.token"
@@ -185,9 +187,22 @@ export default class {
 			body: JSON.stringify(payload),
 		}).then((r) => r.json());
 
-		localStorage.setItem("chat:matrix-access-token", JSON.stringify(data.access_token));
+		if (data?.errcode)
+			throw new TypeError(
+				"Error logging into Matrix with Reddit token: " + data.errcode + ": " + data.error
+			);
 
-		return [data.access_token, getJWTexpiry(data.access_token)];
+		if (data.device_id)
+			localStorage.setItem("chat:matrix-device-id", JSON.stringify(data.device_id));
+
+		const tokenExpiry = getJWTexpiry(data.access_token);
+		localStorage.setItem("chat:matrix-access-token", JSON.stringify(data.access_token));
+		localStorage.setItem("chat:access-token", JSON.stringify({
+			token: data.access_token,
+			expires: tokenExpiry,
+		}));
+
+		return [data.access_token, tokenExpiry];
 	});
 
 	private static ratelimiter = new RateLimiter(1000, 100);
