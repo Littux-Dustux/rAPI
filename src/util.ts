@@ -1,3 +1,5 @@
+export { RichTextBuilder } from "./richtext";
+
 /* === Auth token tools === */
 export const getJWTexpiry = (token: string): number => {	
 	// Split JWT token into 3 parts, decode the second base64 part, parse as JSON, and get the "exp" value.
