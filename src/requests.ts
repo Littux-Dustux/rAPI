@@ -1,5 +1,6 @@
-import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams, capitalize, getJWTexpiry } from "./util";
+import { AuthToken, RateLimiter, sleep, getCookiePing, parseParams, capitalize, getJWTexpiry, getCookie } from "./util";
 import { getLogger } from "./logging";
+import type { rtypes, models, GQL } from "./globals";
 
 const logger = getLogger("requests");
 
@@ -14,6 +15,7 @@ async function fetchWithRetries(input: RequestInfo | URL, init: RequestInit) {
 	let resp: Response,
 		sleepDuration = 1000;
 	while (true) {
+		if ((window as any).__rAPIkill) throw new Error("rAPI killswitch activated");
 		try { resp = await fetch(input, init); break;
 		} catch (err) {
 			if (!(err instanceof TypeError)) throw err;
@@ -24,7 +26,7 @@ async function fetchWithRetries(input: RequestInfo | URL, init: RequestInit) {
 	}; return resp;
 }
 
-class RedditError {
+export class RedditError {
 	public code: rtypes.ErrorCode | number;
 	public msg: string;
 	public field?: string;
@@ -49,11 +51,13 @@ class RedditError {
 
 
 /** Errors from Reddit */
-class RedditAPIError extends Error {
+export class RedditAPIError extends Error {
 	public readonly errors: RedditError[] = [];
+	public readonly errCodes: Set<rtypes.ErrorCode | number>;
+	public readonly errMessages: Set<string>;
 
 	hasErrCode(code: rtypes.ErrorCode | number): boolean {
-		return this.errors.map(e => e.code).includes(code)
+		return this.errCodes.has(code);
 	};
 
 	get error() { return this.errors[0] };
@@ -78,10 +82,12 @@ class RedditAPIError extends Error {
 		);
 		this.name = "RedditAPIError";
 		this.errors = errors;
+		this.errCodes = new Set(this.errors.map(e => e.code));
+		this.errMessages = new Set(this.errors.map(e => e.msg));
 	}
 };
 
-export default class {
+export class rAPIcore {
 	constructor() {}
 
 	static ratelimitRegex = /([0-9]{1,3}) (milliseconds?|seconds?|minutes?)/;
@@ -140,8 +146,8 @@ export default class {
 			})
 			.then((resp) => resp.text())
 			.then((text) => {
-				logger.dbg("Got data from /svc/shreddit/token, response: " + text);
 				const data: { token: string, expires: number } = JSON.parse(text);
+				logger.dbg("Got data from /svc/shreddit/token, token expires at " + new Date(data.expires).toString());
 				(token = data.token), (expiry = data.expires);
 			});
 		};
@@ -201,6 +207,7 @@ export default class {
 			token: data.access_token,
 			expires: tokenExpiry,
 		}));
+		logger.dbg("Got matrix access token, expires at "+new Date(tokenExpiry).toString());
 
 		return [data.access_token, tokenExpiry];
 	});
@@ -223,13 +230,13 @@ export default class {
 			body, json, requestInit = {},
 			ratelimit = false,
 		}: {
-			url?: URL | string;
+			url: URL | string;
 			oauth?: boolean;
 			body?: BodyInit;
 			json?: Object;
 			requestInit?: RequestInit;
 			ratelimit?: boolean;
-			method?: HTTPMethod;
+			method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "TRACE";
 		}
 	): Promise<Response> {
 		requestInit.credentials = "same-origin";
@@ -242,7 +249,7 @@ export default class {
 
 		if (!(method === "GET" || method === "HEAD")) {
 			if (json) {
-				requestInit.headers.set("content-type", "application/json; charset=UTF-8");
+				requestInit.headers.set("content-type", "application/json");
 				requestInit.body = JSON.stringify(json);
 			} else if (body) {
 				requestInit.body = body;
@@ -275,11 +282,15 @@ export default class {
 		path: URL | string,
 		{ params, oauth }: { params?: [string, any][] | Record<string, any>; oauth?: boolean }
 	): Promise<any> {
-		let url: URL;
-		if (path instanceof URL) url = new URL(path);
-		else url = new URL((oauth ? "https://oauth.reddit.com" : location.origin) + path);
+		if (location.host === "sh.reddit.com") oauth = true; // As legacy API doesn't work on sh.reddit.com
 
-		if (params) params.forEach((par) => url.searchParams.set(par[0], par[1]));
+		let url =
+			path instanceof URL
+				? new URL(path)
+				: new URL((oauth ? "https://oauth.reddit.com" : location.origin) + path);
+
+		if (params) parseParams(params).forEach((par) => url.searchParams.set(par[0], par[1]));
+
 		if (!oauth && !url.pathname.endsWith(".json")) url.pathname += ".json";
 		url.searchParams.set("raw_json", "1");
 
@@ -350,6 +361,8 @@ export default class {
 		payload: [string, any][] | Record<string, any> | URLSearchParams,
 		{ oauth = false, errorParseMaxSize = 20e6 }: { oauth?: boolean; errorParseMaxSize?: number }
 	): Promise<any> {
+		if (location.host === "sh.reddit.com") oauth = true; // As legacy API doesn't work on sh.reddit.com
+
 		let body = new URLSearchParams(
 			(payload instanceof URLSearchParams) ? payload : parseParams(payload)
 		);
@@ -361,20 +374,13 @@ export default class {
 		let blob = await resp.blob(),
 			data: models.POSTResponse<any>;
 
-		if (
-			!(
-				blob.type === "" ||
-				blob.type.startsWith("text/plain") ||
-				blob.type.startsWith("application/json")
-			) ||
-			blob.size > errorParseMaxSize
+		if (!(blob.type === ""
+			|| blob.type.startsWith("text/plain")
+			|| blob.type.startsWith("application/json")
+			) || blob.size > errorParseMaxSize
 		) {
 			logger.dbg(
-				"Not parsing errors of POST request as response size (" +
-					blob.size +
-					") is greater than max (" +
-					errorParseMaxSize +
-					"), or response isn't plain text or JSON."
+				"Not parsing errors of POST request as response size ("+blob.size+") is greater than max ("+errorParseMaxSize+"), or response isn't plain text or JSON."
 			);
 			return blob;
 		}
@@ -385,7 +391,7 @@ export default class {
 			data = JSON.parse(dataText);
 		} catch (error) {
 			logger.wrn(
-				"Error parsing POST response data (" + blob.type + ") from " + url + " as JSON: " + error
+				"Error parsing POST response data ("+blob.type+") from "+url+" as JSON: " + error
 			);
 		}
 
@@ -427,81 +433,112 @@ export default class {
 			throw new RedditAPIError([resp.status, "Internal Server Error"]);
 		}
 		return data;
-	}
+	};
 
-	/**
-	 * Fetches and aggregates listing children from a paginated API endpoint.
-	 *
-	 * @param path - The API endpoint URL to fetch the listing from.
-	 * @param options - Additional options
-	 * @param [options.params] - Optional query parameters for the API request.
-	 *
-	 * **NOTE**:
-	 *
-	 * - If you include the `after` parameter, items after that ID will be fetched immediately.
-	 * - If you include `before`, it will fetch in the opposite order until the first listing item,
-	 *  or until the `limit` is reached. The listings have to be collected first and yielded in the reverse order
-	 *  to maintain the correct sequence, so it may use more memory and take longer.
-	 * - When using `before` or `after`, if the specified ID doesn't exist in the listing, you'll get `400: Bad Request`
-	 * @param [options.limit] - Max items to fetch. Default is unlimited.
-	 * @yields Listing children one by one.
-	 * @throws `TypeError` if the provided URL does not return a valid listing object, or `RedditAPIError` on API errors.
-	 */
-	static async *listing<T>(
-		path: string | URL,
-		{ params, oauth, limit, }:
-		{ params?: [string, any][] | Record<string, any> | URLSearchParams; oauth?: boolean; limit?: number }
-	): AsyncGenerator<T, void, unknown> {
-		let url: URL, after: string, before: string;
-		if (path instanceof URL) url = new URL(path);
-		else url = new URL((oauth ? "https://oauth.reddit.com" : location.origin) + path);
+	/** GraphQL error messages with Status Code */
+	static gqlStatusCodeRegex = /^(\d+) : (.*)/;
 
-		if (params) parseParams(params).forEach((par) => url.searchParams.set(par[0], par[1]));
+	static async gql<K extends keyof GQL.ResponseDataMap>(
+		operationName: string, sha256Hash: string, variables = {}
+	): Promise<GQL.Response<K>> {
+		const resp = await this.request({
+			"url": "https://gql-fed.reddit.com", "method": "POST",
+			"json": {
+				operationName, variables,
+				"extensions": {
+					"persistedQuery": { sha256Hash, "version": 1 }
+				}
+			}, "oauth": true, "ratelimit": false
+		});
 
-		const listingChildrens: T[][] = [],
-			goInReverse = Boolean(url.searchParams.get("before"));
-		url.searchParams.set("limit", limit && limit < 100 ? limit.toString() : "100");
-		url.searchParams.set("count", "200"); // so that `before` and `after` keys get set on the response
+		const blob = await resp.blob();
+		const blobText = await blob.text();
+		let data: GQL.Response<K>;
+		try {
+			data = JSON.parse(blobText);
+		} catch(err) {
+			if (resp.ok) throw TypeError("Error parsing GraphQL response as JSON: "+err+"\nResponse: "+blobText)
+			else throw new RedditAPIError([resp.status, blobText]);
+		};
 
-		logger.dbg(
-			"Fetching listing " +
-				url +
-				(goInReverse
-					? " in reverse from before=" + url.searchParams.get("before")
-					: " from after=" + url.searchParams.get("after")) +
-				" limit=" +
-				limit
-		);
+		if (data.errors) {
+			const errors: RedditError[] = [];
+			if (!resp.ok) errors.push(new RedditError(resp.status, resp.statusText));
+			data.errors.forEach(err => {
+				if (err.path) {
+					const statusFromMessage = this.gqlStatusCodeRegex.exec(err.message);
+					if (statusFromMessage)
+						errors.push(
+							new RedditError(
+								parseInt(statusFromMessage[1]),
+								statusFromMessage[2],
+								err.path.map(str => JSON.stringify(str)).join(" => ")
+							)
+						)
+					else
+						errors.push(
+							new RedditError(
+								"GQL_ERROR", err.message,
+								err.path.map(str => JSON.stringify(str)).join(" => ")
+							)
+						);
+				};
+			});
+			throw new RedditAPIError(errors);
+		};
 
-		do {
-			let listingObject: models.Listing<T> = await this.get(url, { oauth });
-			if (!listingObject?.kind || listingObject.kind != "Listing")
-				throw TypeError(url + " is not a listing.");
+		return data;
+	};
 
-			if (goInReverse) {
-				before = listingObject.data.before;
-				url.searchParams.set("before", before);
+	static async svcGql<K extends keyof GQL.ResponseDataMap>(
+		operation: string, variables = {}
+	): Promise<GQL.SVCResponse<K>> {
+		if (!(location.host === "sh.reddit.com" || location.host === "www.reddit.com"))
+			throw new TypeError("SVC GraphQL unsupported on "+location.host);
 
-				// Only yield after we've fetched all children, to maintain order when going backwards.
-				listingChildrens.push(listingObject.data.children);
-			} else {
-				after = listingObject.data.after;
-				url.searchParams.set("after", after);
+		const resp = await this.request({
+			"url": "/svc/shreddit/graphql", "method": "POST",
+			"json": { operation, variables, "csrf_token": getCookie("csrf_token") },
+			"oauth": false, "ratelimit": false
+		});
+		const blobText = await (await resp.blob()).text(), errors: RedditError[] = [];
 
-				yield* listingObject.data.children;
-			}
+		if (!resp.ok) {
+			if (resp.status === 400)
+				throw new TypeError("Bad CSRF token for shreddit svc graphql: recieved 400 response with '"+blobText+"'")
+			else if (resp.status === 500)
+				throw new RedditAPIError([["GQL_SYNTAX_ERROR", blobText, "variables"]])
+			else errors.push(new RedditError(resp.status, blobText));
+		};
 
-			if (limit !== null) {
-				limit -= listingObject.data.children.length;
-				if (limit <= 0) {
-					if (goInReverse) {
-						// Yield children in reverse order
-						for (const children of listingChildrens.reverse())
-							yield* children;
-					};
-					break;
-				} else if (limit < 100) url.searchParams.set("limit", limit.toString());
-			}
-		} while (after || before);
-	}
+		let data: GQL.SVCResponse<K> = JSON.parse(blobText);
+		if (data.errors) {
+			data.errors.forEach(err => {
+				if (err.path) {
+					const statusFromMessage = this.gqlStatusCodeRegex.exec(err.message);
+					if (statusFromMessage)
+						errors.push(
+							new RedditError(
+								parseInt(statusFromMessage[1]),
+								statusFromMessage[2],
+								err.path.map(str => JSON.stringify(str)).join(" => ")
+							)
+						)
+					else
+						errors.push(
+							new RedditError(
+								"GQL_ERROR", err.message,
+								err.path.map(str => JSON.stringify(str)).join(" => ")
+							)
+						);
+				} else errors.push(
+					// it will return 500 status instead. this won't actually happen
+					new RedditError("GQL_SYNTAX_ERROR", err.message, "variables")
+				);
+			});
+		};
+
+		if (errors.length) throw new RedditAPIError(errors)
+		else return data;
+	};
 };

@@ -1,4 +1,4 @@
-declare namespace rtypes {
+export namespace rtypes {
 	/**
 	code | message
 	:- | :-
@@ -253,6 +253,8 @@ declare namespace rtypes {
 		| "gold_only"
 		| "GOLD_ONLY_SR_REQUIRED"
 		| "GOLD_REQUIRED"
+		| "GQL_ERROR"
+		| "GQL_SYNTAX_ERROR"
 		| "HTTPS_REQUIRED"
 		| "INSUFFICIENT_CREDDITS"
 		| "INVALID_CODE"
@@ -399,7 +401,7 @@ declare namespace rtypes {
 declare type HTTPMethod = "GET" | "POST" | "OPTIONS" | "HEAD" | "PATCH" | "DELETE";
 //declare interface RedditError { code: RedditErrorCode | number; msg: string; field?: string }
 
-declare namespace models {
+export namespace models {
 	interface POSTResponse<T> {
 		json: {
 			errors: [rtypes.ErrorCode, string, string][];
@@ -920,6 +922,59 @@ declare namespace models {
 		kind: "wikipagesettings",
 		data: WikiSettingsData
 	}
+
+	interface RemovalReasonsPage {
+		data: { [key: string]: RemovalReason };
+		order: string[];
+	}
+
+	interface RemovalReason {
+		message: string;
+		id: string;
+		title: string;
+	}
+
+	interface SubredditRules {
+		rules:           Rule[];
+		site_rules:      string[];
+		site_rules_flow: SiteRulesFlow[];
+	}
+
+	interface Rule {
+		kind:             string;
+		description:      string;
+		short_name:       string;
+		violation_reason: string;
+		created_utc:      number;
+		priority:         number;
+		description_html: string;
+	}
+
+	interface SiteRulesFlow {
+		reasonTextToShow: string;
+		reasonText:       string;
+		nextStepHeader?:  string;
+		nextStepReasons?: SiteRulesFlowNextStepReason[];
+	}
+
+	interface SiteRulesFlowNextStepReason {
+		nextStepHeader?:        string;
+		reasonTextToShow:       string;
+		nextStepReasons?:       SiteRulesFlowNextStepReason[];
+		reasonText:             string;
+		canWriteNotes?:         boolean;
+		isAbuseOfReportButton?: boolean;
+		notesInputTitle?:       string;
+		complaintButtonText?:   string;
+		complaintUrl?:          string;
+		complaintPageTitle?:    string;
+		fileComplaint?:         boolean;
+		complaintPrompt?:       string;
+		usernamesInputTitle?:   string;
+		canSpecifyUsernames?:   boolean;
+		requestCrisisSupport?:  boolean;
+		oneUsername?:           boolean;
+	}
 }
 
 declare namespace opts {
@@ -948,5 +1003,84 @@ declare namespace opts {
 		showmore?: boolean;
 		showtitle?: boolean;
 		sort?: rtypes.CommentSort;
+	}
+}
+
+export namespace GQL {
+	interface Response<K extends keyof ResponseDataMap> {
+		data?: Pick<ResponseDataMap, K>;
+		errors?: Error[]
+	}
+
+	interface SVCResponse<K extends keyof ResponseDataMap> {
+		data: Pick<ResponseDataMap, K>;
+		errors: Error[];
+		operation: string;
+	}
+
+	interface Error {
+		message: string,
+		path?: string[]
+	}
+
+	interface ResponseDataMap {
+		subredditInfoById: Subreddit;
+		modApproveBulk: ModActionBulk;
+		modRemoveBulk: ModActionBulk;
+		modIgnoreReportsBulk: ModActionBulk;
+		ModActionBulk: ModActionBulk;
+	}
+
+	interface Subreddit {
+		__typename: "Subreddit";
+		rules: Rule[];
+		modSavedResponses: ModSavedResponses;
+	}
+
+	interface ModSavedResponses {
+		general: SavedResponse[];
+		removals: SavedResponse[];
+		bans: SavedResponse[];
+		modmail: SavedResponse[];
+		reports: SavedResponse[];
+		comments: SavedResponse[];
+		chat: SavedResponse[];
+	}
+
+	interface SavedResponse {
+		__typename: "SavedResponse";
+		id: string;
+		title: string;
+		context: SavedResponseCategory;
+		subredditRule?: SubredditRule | null;
+		message: Message;
+	}
+
+	type SavedResponseCategory = "GENERAL" | "REMOVALS" | "BANS" | "MODMAIL" | "REPORTS" | "COMMENTS" | "CHAT";
+
+	interface Message {
+		richtext: string;
+		markdown: string;
+	}
+
+	interface SubredditRule {
+		id: string;
+		kind: RuleKind;
+		name: string;
+	}
+
+	type RuleKind = "LINK_AND_COMMENT" | "LINK" | "COMMENT";
+
+	interface Rule {
+		id: string;
+		name: string;
+	}
+
+	interface ModActionBulk {
+		ok:        boolean;
+		/** Example: `[{"__typename": "OperationError", "message": "Unknown error"}]` */
+		errors:    GQL.Error[] | null;
+		/** Useless, as expected from reddit devs. You'll get `{"__typename": "OperationError", "message": "Unknown error"}` on errors. The failed IDs won't appear here. */
+		failedIds: string[];
 	}
 }
